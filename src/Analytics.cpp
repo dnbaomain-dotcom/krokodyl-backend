@@ -2,32 +2,35 @@
 #include <Arduino.h>
 #include "LSM6DS3.h"
 #include "BleGatt.h"
+#include "PowerManager.h" // Tohle tu chybělo pro uspání!
 #include <math.h>
 
-extern LSM6DS3 myIMU; // Říkáme, že IMU existuje (definujeme v main.cpp)
+extern LSM6DS3 myIMU; 
 
-// Naše "state" proměnné z tvého kódu schované hezky uvnitř analytiky
+// --- STATE PROMĚNNÉ ---
 static float top3Kicks[3] = {0.0, 0.0, 0.0}; 
 static bool isKicking = false;
 static float currentPeakG = 0.0;
 static uint32_t kickStartTime = 0;
-static uint32_t cooldownEndTime = 0; // Nový neblokující timer
+static uint32_t cooldownEndTime = 0;
+
+// Proměnné pro spánek (přesunuto z .h)
+static unsigned long lastActivityTime = 0;
+const unsigned long SLEEP_TIMEOUT = 300000; // 5 minut
 
 const int KICK_WINDOW_MS = 300; 
-const int COOLDOWN_MS = 1000; // 1 sekunda pauza po ráně
+const int COOLDOWN_MS = 1000; 
 
 // Výpočet Krokodýl Score
 static int calculateFifaScore(float gForce) {
     float safeG = gForce;
     if (safeG > 24.0) safeG = 24.0;
     
-    // Zde používáme tvůj mocninný vzorec
     int score = pow((safeG / 24.0), 0.7) * 99;
     if (score > 99) score = 99;
     return score;
 }
 
-// Uložení Top 3 střel do paměti čipu
 static void updateLeaderboard(float newScore) {
     if (newScore <= top3Kicks[2]) return;
 
@@ -45,7 +48,6 @@ static void updateLeaderboard(float newScore) {
 
 void Analytics::init() {
     myIMU.begin();
-    // Tady případně nastavíme senzor na maximální citlivost
 }
 
 void Analytics::resetLeaderboard() {
@@ -55,39 +57,46 @@ void Analytics::resetLeaderboard() {
 }
 
 void Analytics::processFrame() {
-    // Pokud jsme v cooldownu po ráně, nic neměříme
-    if (millis() < cooldownEndTime) return;
+    unsigned long currentTime = millis();
 
+    // 1. NEJDŘÍV PŘEČTEME DATA ZE SENZORU
     float x = myIMU.readFloatAccelX();
     float y = myIMU.readFloatAccelY();
     float z = myIMU.readFloatAccelZ();
     
     float totalForce = sqrt((x*x) + (y*y) + (z*z));
-    // FIX: fabs místo abs!
     float currentG = fabs(totalForce - 1.0);
 
-    // 1. Zjistili jsme ránu nad 5 G? Začínáme nahrávat
+    // 2. HLÍDAČ POHYBU (Spánek)
+    if (currentG > 1.2) {
+        lastActivityTime = currentTime;
+    }
+
+    if (currentTime - lastActivityTime > SLEEP_TIMEOUT) {
+        PowerManager::goToDeepSleep();
+    }
+    
+    // 3. ANALYTIKA STŘELY (Pokud nejsme v cooldownu)
+    if (millis() < cooldownEndTime) return;
+
+    // Začátek okna
     if (currentG > 5.0 && !isKicking) {
         isKicking = true;
         kickStartTime = millis();
         currentPeakG = currentG;
     }
 
-    // 2. JSME V OKNĚ: Sledujeme, jestli síla nestoupá
+    // Jsme v okně
     if (isKicking) {
         if (currentG > currentPeakG) currentPeakG = currentG;
 
-        // 3. OKNO KONČÍ (uplynulo 300 ms)
+        // Konec okna
         if (millis() - kickStartTime > KICK_WINDOW_MS) {
             updateLeaderboard(currentPeakG);
             
-            // Převedeme surová G na Krokodýl Score
             int finalScore = calculateFifaScore(currentPeakG);
-            
-            // Odeslání do frontendu přes Bluetooth šuplíček!
             BleGatt::sendShotData((uint8_t)finalScore);
 
-            // Ukončíme švih a zapneme neblokující cooldown
             isKicking = false;
             currentPeakG = 0.0;
             cooldownEndTime = millis() + COOLDOWN_MS;

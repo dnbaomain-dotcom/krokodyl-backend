@@ -38,7 +38,12 @@ void PowerManager::checkFactoryReset() {
 }
 
 void PowerManager::goToDeepSleep() {
+    Serial.println("Krokodýl usíná. Zzz...");
+    
+    // Bezpečné vypnutí Bluetooth vysílání
     Bluefruit.Advertising.stop();
-    // Procesor se natvrdo vypne, probudí ho až impuls z IMU senzoru
+    
+    // Tímto systémovým příkazem pošleme nRF52 čip do nejhlubšího spánku.
+    // Procesor se natvrdo vypne, probudí ho až reset.
     sd_power_system_off(); 
 }
